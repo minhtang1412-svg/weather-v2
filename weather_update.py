@@ -1,56 +1,61 @@
 import pandas as pd
 import numpy as np
 
-# 1. Đọc dữ liệu từ file CSV
-df = pd.read_csv('HaNoi,VietNam 2025-10-01 to 2026-06-02(1) - HaNoi,VietNam 2025-10-01 to 2026-06-02.csv')
+# 1. Đọc dữ liệu lịch sử để huấn luyện mô hình
+try:
+    df_train = pd.read_csv('HaNoi,VietNam 2025-10-01 to 2026-06-02(1) - HaNoi,VietNam 2025-10-01 to 2026-06-02.csv')
+except FileNotFoundError:
+    print("Lỗi: Không tìm thấy file dữ liệu huấn luyện (CSV gốc).")
+    exit()
 
-# 2. Định nghĩa hàm tính xác suất Gaussian
-def gaussian_probability(x, mean, std):
+# 2. Đọc file CSV chứa dữ liệu đầu vào cần dự báo
+try:
+    df_input = pd.read_csv('du_lieu_dau_vao_du_bao.csv')
+except FileNotFoundError:
+    print("Lỗi: Không tìm thấy file 'du_lieu_dau_vao_du_bao.csv'. Hãy đảm bảo file này tồn tại cùng thư mục.")
+    exit()
+
+# 3. Hàm tính log xác suất
+def log_gaussian_probability(x, mean, std):
     if pd.isna(mean) or pd.isna(std):
-        return 1.0
+        return 0.0
     std = max(std, 1e-9) 
-    exponent = np.exp(-((x - mean) ** 2 / (2 * std ** 2)))
-    return (1 / (np.sqrt(2 * np.pi) * std)) * exponent
+    return -0.5 * np.log(2 * np.pi * std ** 2) - ((x - mean) ** 2 / (2 * std ** 2))
 
-# 3. Tính toán các thông số thống kê cần thiết cho Naive Bayes
-condition_prior = df['conditions'].value_counts(normalize=True)
-numeric_df = df.select_dtypes(include=[np.number])
-numeric_df['conditions'] = df['conditions']
+# 4. Tính toán các thông số thống kê từ tập huấn luyện
+condition_prior = df_train['conditions'].value_counts(normalize=True)
+numeric_df = df_train.select_dtypes(include=[np.number]).copy()
+numeric_df['conditions'] = df_train['conditions']
 condition_stats = numeric_df.groupby('conditions').agg(['mean', 'std'])
-mapping_df = df.groupby('conditions')[['Weather', 'description']].agg(lambda x: pd.Series.mode(x)[0] if not pd.Series.mode(x).empty else "Unknown")
+
+mapping_df = df_train.groupby('conditions')[['Weather', 'description']].agg(lambda x: pd.Series.mode(x)[0] if not pd.Series.mode(x).empty else "Unknown")
 condition_to_weather = mapping_df['Weather'].to_dict()
 condition_to_desc = mapping_df['description'].to_dict()
-print("-" * 60)
-# 4. Nhập dữ liệu mới từ bàn phím (Đã thêm đầy đủ các cột bạn yêu cầu)
-new_data = {
-    'tempmax': float(input("Nhập nhiệt độ cao nhất (tempmax): ")),
-    'tempmin': float(input("Nhập nhiệt độ thấp nhất (tempmin): ")),
-    'temp': float(input("Nhập nhiệt độ trung bình (temp): ")),
-    'tempwet': float(input("Nhập nhiệt độ bầu ướt (tempwet): ")),
-    'humidity': float(input("Nhập độ ẩm (humidity): ")),
-    'precip(Rainfall)': float(input("Nhập lượng mưa (precip(Rainfall)): ")),
-    'windspeed': float(input("Nhập tốc độ gió (windspeed): ")),
-    'cloudcover': float(input("Nhập độ bao phủ mây (cloudcover): ")),
-    'visibility': float(input("Nhập tầm nhìn (visibility): "))
-}
-# 5. Tính toán xác suất tổng hợp cho từng loại conditions
-results = {}
-for cond in condition_prior.index:
-    # 5.1 Khởi tạo xác suất tổng bằng xác suất tiên nghiệm của condition đó
-    prob = condition_prior[cond]
-    # 5.2 Duyệt qua từng biến bạn đã nhập để nhân dồn xác suất có điều kiện
-    for feature, value in new_data.items():
-        mean = condition_stats.loc[cond, (feature, 'mean')]
-        std = condition_stats.loc[cond, (feature, 'std')]
-        prob *= gaussian_probability(value, mean, std)  
-    results[cond] = prob
-# 6. Chọn loại conditions có xác suất lớn nhất
-predicted_condition = max(results, key=results.get)
-# 7. Từ conditions suy ra Weather và description
-predicted_weather = condition_to_weather.get(predicted_condition, "Không có dữ liệu")
-predicted_desc = condition_to_desc.get(predicted_condition, "Không có dữ liệu")
-print("-" * 60)
-print("KẾT QUẢ DỰ BÁO:")
-print(f">> Tình trạng (Condition): {predicted_condition}")
-print(f">> Loại thời tiết (Weather): {predicted_weather}")
-print(f">> Mô tả chi tiết (Description): {predicted_desc}")
+
+# 5. TỰ ĐỘNG DỰ BÁO VÀ IN KẾT QUẢ RA TERMINAL ĐẸP MẮT
+print("\n" + "="*70)
+print(" BẢNG KẾT QUẢ DỰ BÁO THỜI TIẾT TỰ ĐỘNG ".center(70))
+print("="*70)
+
+for index, row in df_input.iterrows():
+    results = {}
+    for cond in condition_prior.index:
+        log_prob = np.log(condition_prior[cond])
+        for feature in df_input.columns:
+            # Chỉ tính nếu cột đó có trong tập huấn luyện
+            if feature in condition_stats.columns.levels[0]:
+                mean = condition_stats.loc[cond, (feature, 'mean')]
+                std = condition_stats.loc[cond, (feature, 'std')]
+                log_prob += log_gaussian_probability(row[feature], mean, std)  
+        results[cond] = log_prob
+    
+    # Lấy nhãn có xác suất cao nhất
+    predicted_condition = max(results, key=results.get)
+    predicted_weather = condition_to_weather.get(predicted_condition, "Không có dữ liệu")
+    predicted_desc = condition_to_desc.get(predicted_condition, "Không có dữ liệu")
+    
+    # IN RA MAN HÌNH
+    print(f"  Dự báo       : {predicted_condition} ({predicted_weather})")
+    print(f"  Mô tả chi tiết: {predicted_desc}")
+    print("=" * 100)
+print("Đã hoàn tất dự báo!\n")
